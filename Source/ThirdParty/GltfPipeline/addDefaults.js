@@ -214,6 +214,43 @@ define([
         }
     }
 
+    function getAnimatedNodes(gltf) {
+        var nodes = {};
+        ForEach.animation(gltf, function(animation) {
+            ForEach.animationChannel(animation, function(channel) {
+                var target = channel.target;
+                var nodeId = target.node;
+                var path = target.path;
+                // Ignore animations that target 'weights'
+                if (path === 'translation' || path === 'rotation' || path === 'scale') {
+                    nodes[nodeId] = true;
+                }
+            });
+        });
+        return nodes;
+    }
+
+    function addDefaultTransformToAnimatedNodes(gltf) {
+        var animatedNodes = getAnimatedNodes(gltf);
+        ForEach.node(gltf, function(node, id) {
+            if (defined(animatedNodes[id])) {
+                delete node.matrix;
+                node.translation = defaultValue(node.translation, [0.0, 0.0, 0.0]);
+                node.rotation = defaultValue(node.rotation, [0.0, 0.0, 0.0, 1.0]);
+                node.scale = defaultValue(node.scale, [1.0, 1.0, 1.0]);
+            }
+        });
+    }
+
+    var defaultPbrMaterial = {
+        emissiveFactor: [0.0, 0.0, 0.0],
+        alphaMode: 'OPAQUE',
+        doubleSided: false,
+        extras : {
+            _pipeline: {}
+        }
+    };
+
     var defaultMaterial = {
         values : {
             emission : [
@@ -307,6 +344,24 @@ define([
         }
     };
 
+    function addDefaultPbrMaterial(gltf) {
+        var materials = gltf.materials;
+        var meshes = gltf.meshes;
+
+        var meshesLength = meshes.length;
+        for (var meshId = 0; meshId < meshesLength; meshId++) {
+            var mesh = meshes[meshId];
+            var primitives = mesh.primitives;
+            var primitivesLength = primitives.length;
+            for (var j = 0; j < primitivesLength; j++) {
+                var primitive = primitives[j];
+                if (!defined(primitive.material)) {
+                    primitive.material = addToArray(materials, clone(defaultPbrMaterial, true));
+                }
+            }
+        }
+    }
+
     function addDefaultMaterial(gltf) {
         var materials = gltf.materials;
         var meshes = gltf.meshes;
@@ -321,10 +376,7 @@ define([
             for (var j = 0; j < primitivesLength; j++) {
                 var primitive = primitives[j];
                 if (!defined(primitive.material)) {
-                    if (!defined(defaultMaterialId)) {
-                        defaultMaterialId = addToArray(materials, clone(defaultMaterial, true));
-                    }
-                    primitive.material = defaultMaterialId;
+                    primitive.material = addToArray(materials, clone(defaultMaterial, true));
                 }
             }
         }
@@ -479,8 +531,15 @@ define([
     function addDefaults(gltf, options) {
         options = defaultValue(options, {});
         addDefaultsFromTemplate(gltf, gltfTemplate);
-        addDefaultMaterial(gltf);
-        addDefaultTechnique(gltf);
+        addDefaultTransformToAnimatedNodes(gltf);
+
+        if (gltf.asset.extras.gltf_pipeline_upgrade_10to20) {
+            addDefaultMaterial(gltf);
+            addDefaultTechnique(gltf);
+        } else {
+            addDefaultPbrMaterial(gltf);
+        }
+
         addDefaultByteOffsets(gltf);
         selectDefaultScene(gltf);
         inferBufferViewTargets(gltf);

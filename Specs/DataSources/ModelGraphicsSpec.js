@@ -8,8 +8,8 @@ defineSuite([
         'DataSources/ConstantProperty',
         'DataSources/NodeTransformationProperty',
         'DataSources/PropertyBag',
-        'Scene/ColorBlendMode',
         'Scene/ClippingPlaneCollection',
+        'Scene/ColorBlendMode',
         'Scene/HeightReference',
         'Scene/ShadowMode'
     ], function(
@@ -22,8 +22,8 @@ defineSuite([
         ConstantProperty,
         NodeTransformationProperty,
         PropertyBag,
-        ColorBlendMode,
         ClippingPlaneCollection,
+        ColorBlendMode,
         HeightReference,
         ShadowMode) {
     'use strict';

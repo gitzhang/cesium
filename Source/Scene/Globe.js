@@ -12,9 +12,9 @@ define([
         '../Core/EllipsoidTerrainProvider',
         '../Core/Event',
         '../Core/IntersectionTests',
-        '../Core/loadImage',
         '../Core/Ray',
         '../Core/Rectangle',
+        '../Core/Resource',
         '../Renderer/ShaderSource',
         '../Renderer/Texture',
         '../Shaders/GlobeFS',
@@ -24,7 +24,6 @@ define([
         './GlobeSurfaceShaderSet',
         './GlobeSurfaceTileProvider',
         './ImageryLayerCollection',
-        './Material',
         './QuadtreePrimitive',
         './SceneMode',
         './ShadowMode'
@@ -42,9 +41,9 @@ define([
         EllipsoidTerrainProvider,
         Event,
         IntersectionTests,
-        loadImage,
         Ray,
         Rectangle,
+        Resource,
         ShaderSource,
         Texture,
         GlobeFS,
@@ -54,7 +53,6 @@ define([
         GlobeSurfaceShaderSet,
         GlobeSurfaceTileProvider,
         ImageryLayerCollection,
-        Material,
         QuadtreePrimitive,
         SceneMode,
         ShadowMode) {
@@ -104,15 +102,10 @@ define([
          */
         this.show = true;
 
-        /**
-         * The normal map to use for rendering waves in the ocean.  Setting this property will
-         * only have an effect if the configured terrain provider includes a water mask.
-         *
-         * @type {String}
-         * @default buildModuleUrl('Assets/Textures/waterNormalsSmall.jpg')
-         */
-        this.oceanNormalMapUrl = buildModuleUrl('Assets/Textures/waterNormalsSmall.jpg');
-        this._oceanNormalMapUrl = undefined;
+        this._oceanNormalMapResourceDirty = true;
+        this._oceanNormalMapResource = new Resource({
+            url: buildModuleUrl('Assets/Textures/waterNormalsSmall.jpg')
+        });
 
         /**
          * The maximum screen-space error used to drive level-of-detail refinement.  Higher
@@ -219,6 +212,45 @@ define([
             }
         },
         /**
+         * Gets an event that's raised when an imagery layer is added, shown, hidden, moved, or removed.
+         *
+         * @memberof Globe.prototype
+         * @type {Event}
+         * @readonly
+         */
+        imageryLayersUpdatedEvent : {
+            get : function() {
+                return this._surface.tileProvider.imageryLayersUpdatedEvent;
+            }
+        },
+        /**
+         * Gets an event that's raised when a surface tile is loaded and ready to be rendered.
+         *
+         * @memberof Globe.prototype
+         * @type {Event}
+         * @readonly
+         */
+        tileLoadedEvent : {
+            get : function() {
+                return this._surface.tileProvider.tileLoadedEvent;
+            }
+        },
+        /**
+         * Returns <code>true</code> when the tile load queue is empty, <code>false</code> otherwise.  When the load queue is empty,
+         * all terrain and imagery for the current view have been loaded.
+         * @memberof Globe.prototype
+         * @type {Boolean}
+         * @readonly
+         */
+        tilesLoaded: {
+            get: function() {
+                if (!defined(this._surface)) {
+                    return true;
+                }
+                return (this._surface.tileProvider.ready && this._surface._tileLoadQueueHigh.length === 0 && this._surface._tileLoadQueueMedium.length === 0 && this._surface._tileLoadQueueLow.length === 0);
+            }
+        },
+        /**
          * Gets or sets the color of the globe when no imagery is available.
          * @memberof Globe.prototype
          * @type {Color}
@@ -246,6 +278,22 @@ define([
             }
         },
         /**
+         * The normal map to use for rendering waves in the ocean.  Setting this property will
+         * only have an effect if the configured terrain provider includes a water mask.
+         * @memberof Globe.prototype
+         * @type {String}
+         * @default buildModuleUrl('Assets/Textures/waterNormalsSmall.jpg')
+         */
+        oceanNormalMapUrl: {
+            get: function() {
+                return this._oceanNormalMapResource.url;
+            },
+            set: function(value) {
+                this._oceanNormalMapResource.url = value;
+                this._oceanNormalMapResourceDirty = true;
+            }
+        },
+        /**
          * The terrain provider providing surface geometry for this globe.
          * @type {TerrainProvider}
          *
@@ -261,6 +309,9 @@ define([
                 if (value !== this._terrainProvider) {
                     this._terrainProvider = value;
                     this._terrainProviderChanged.raiseEvent(value);
+                    if (defined(this._material)) {
+                        makeShadersDirty(this);
+                    }
                 }
             }
         },
@@ -311,8 +362,10 @@ define([
     function makeShadersDirty(globe) {
         var defines = [];
 
+        var requireNormals = defined(globe._material) && (globe._material.shaderSource.match(/slope/) || globe._material.shaderSource.match('normalEC'));
+
         var fragmentSources = [];
-        if (defined(globe._material)) {
+        if (defined(globe._material) && (!requireNormals || globe._terrainProvider.requestVertexNormals)) {
             fragmentSources.push(globe._material.shaderSource);
             defines.push('APPLY_MATERIAL');
             globe._surface._tileProvider.uniformMap = globe._material._uniforms;
@@ -354,14 +407,11 @@ define([
      * @param {Ray} ray The ray to test for intersection.
      * @param {Scene} scene The scene.
      * @param {Cartesian3} [result] The object onto which to store the result.
-     * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
+     * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.  The returned position is in projected coordinates for 2D and Columbus View.
      *
-     * @example
-     * // find intersection of ray through a pixel and the globe
-     * var ray = viewer.camera.getPickRay(windowCoordinates);
-     * var intersection = globe.pick(ray, scene);
+     * @private
      */
-    Globe.prototype.pick = function(ray, scene, result) {
+    Globe.prototype.pickWorldCoordinates = function(ray, scene, result) {
         //>>includeStart('debug', pragmas.debug);
         if (!defined(ray)) {
             throw new DeveloperError('ray is required');
@@ -417,6 +467,31 @@ define([
         }
 
         return intersection;
+    };
+
+    var cartoScratch = new Cartographic();
+    /**
+     * Find an intersection between a ray and the globe surface that was rendered. The ray must be given in world coordinates.
+     *
+     * @param {Ray} ray The ray to test for intersection.
+     * @param {Scene} scene The scene.
+     * @param {Cartesian3} [result] The object onto which to store the result.
+     * @returns {Cartesian3|undefined} The intersection or <code>undefined</code> if none was found.
+     *
+     * @example
+     * // find intersection of ray through a pixel and the globe
+     * var ray = viewer.camera.getPickRay(windowCoordinates);
+     * var intersection = globe.pick(ray, scene);
+     */
+    Globe.prototype.pick = function(ray, scene, result) {
+        result = this.pickWorldCoordinates(ray, scene, result);
+        if (defined(result) && scene.mode !== SceneMode.SCENE3D) {
+            result = Cartesian3.fromElements(result.y, result.z, result.x, result);
+            var carto = scene.mapProjection.unproject(result, cartoScratch);
+            result = scene.globe.ellipsoid.cartographicToCartesian(carto, result);
+        }
+
+        return result;
     };
 
     var scratchGetHeightCartesian = new Cartesian3();
@@ -510,25 +585,34 @@ define([
     /**
      * @private
      */
-    Globe.prototype.beginFrame = function(frameState) {
+    Globe.prototype.update = function(frameState) {
         if (!this.show) {
             return;
         }
 
+        if (frameState.passes.render) {
+            this._surface.update(frameState);
+        }
+    };
+
+    /**
+     * @private
+     */
+    Globe.prototype.beginFrame = function(frameState) {
         var surface = this._surface;
         var tileProvider = surface.tileProvider;
         var terrainProvider = this.terrainProvider;
         var hasWaterMask = this.showWaterEffect && terrainProvider.ready && terrainProvider.hasWaterMask;
 
-        if (hasWaterMask && this.oceanNormalMapUrl !== this._oceanNormalMapUrl) {
+        if (hasWaterMask && this._oceanNormalMapResourceDirty) {
             // url changed, load new normal map asynchronously
-            var oceanNormalMapUrl = this.oceanNormalMapUrl;
-            this._oceanNormalMapUrl = oceanNormalMapUrl;
-
+            this._oceanNormalMapResourceDirty = false;
+            var oceanNormalMapResource = this._oceanNormalMapResource;
+            var oceanNormalMapUrl =  oceanNormalMapResource.url;
             if (defined(oceanNormalMapUrl)) {
                 var that = this;
-                when(loadImage(oceanNormalMapUrl), function(image) {
-                    if (oceanNormalMapUrl !== that.oceanNormalMapUrl) {
+                when(oceanNormalMapResource.fetchImage(), function(image) {
+                    if (oceanNormalMapUrl !== that._oceanNormalMapResource.url) {
                         // url changed while we were loading
                         return;
                     }
@@ -544,8 +628,8 @@ define([
             }
         }
 
-        var mode = frameState.mode;
         var pass = frameState.passes;
+        var mode = frameState.mode;
 
         if (pass.render) {
             // Don't show the ocean specular highlights when zoomed out in 2D and Columbus View.
@@ -574,7 +658,7 @@ define([
     /**
      * @private
      */
-    Globe.prototype.update = function(frameState) {
+    Globe.prototype.render = function(frameState) {
         if (!this.show) {
             return;
         }
@@ -587,11 +671,11 @@ define([
         var pass = frameState.passes;
 
         if (pass.render) {
-            surface.update(frameState);
+            surface.render(frameState);
         }
 
         if (pass.pick) {
-            surface.update(frameState);
+            surface.render(frameState);
         }
     };
 
@@ -629,8 +713,6 @@ define([
      * Once an object is destroyed, it should not be used; calling any function other than
      * <code>isDestroyed</code> will result in a {@link DeveloperError} exception.  Therefore,
      * assign the return value (<code>undefined</code>) to the object as done in the example.
-     *
-     * @returns {undefined}
      *
      * @exception {DeveloperError} This object was destroyed, i.e., destroy() was called.
      *

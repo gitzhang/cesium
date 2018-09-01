@@ -261,6 +261,26 @@ define([
                 };
             },
 
+            toRenderPixelCountAndCall : function(util, customEqualityTesters) {
+                return {
+                    compare : function(actual, expected) {
+                        var actualRgba = renderAndReadPixels(actual);
+
+                        var webglStub = !!window.webglStub;
+                        if (!webglStub) {
+                            // The callback may have expectations that fail, which still makes the
+                            // spec fail, as we desired, even though this matcher sets pass to true.
+                            var callback = expected;
+                            callback(countRenderedPixels(actualRgba));
+                        }
+
+                        return {
+                            pass : true
+                        };
+                    }
+                };
+            },
+
             toPickPrimitive : function(util, customEqualityTesters) {
                 return {
                     compare : function(actual, expected, x, y, width, height) {
@@ -273,6 +293,22 @@ define([
                 return {
                     compare : function(actual, expected, x, y, width, height) {
                         return pickPrimitiveEquals(actual, undefined, x, y, width, height);
+                    }
+                };
+            },
+
+            toDrillPickPrimitive : function(util, customEqualityTesters) {
+                return {
+                    compare : function(actual, expected, x, y, width, height) {
+                        return drillPickPrimitiveEquals(actual, 1, x, y, width, height);
+                    }
+                };
+            },
+
+            notToDrillPick : function(util, customEqualityTesters) {
+                return {
+                    compare : function(actual, expected, x, y, width, height) {
+                        return drillPickPrimitiveEquals(actual, 0, x, y, width, height);
                     }
                 };
             },
@@ -418,6 +454,21 @@ define([
         };
     }
 
+    function countRenderedPixels(rgba) {
+        var pixelCount = rgba.length / 4;
+        var count = 0;
+        for (var i = 0; i < pixelCount; i++) {
+            var index = i * 4;
+            if (rgba[index] !== 0 ||
+                rgba[index + 1] !== 0 ||
+                rgba[index + 2] !== 0 ||
+                rgba[index + 3] !== 255) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     function renderAndReadPixels(options) {
         var scene;
 
@@ -483,6 +534,36 @@ define([
 
         if (defined(expected)) {
             pass = (result.primitive === expected);
+        } else {
+            pass = !defined(result);
+        }
+
+        if (!pass) {
+            message = 'Expected to pick ' + expected + ', but picked: ' + result;
+        }
+
+        return {
+            pass : pass,
+            message : message
+        };
+    }
+
+    function drillPickPrimitiveEquals(actual, expected, x, y, width, height) {
+        var scene = actual;
+        var windowPosition = new Cartesian2(x, y);
+        var result = scene.drillPick(windowPosition, undefined, width, height);
+
+        if (!!window.webglStub) {
+            return {
+                pass : true
+            };
+        }
+
+        var pass = true;
+        var message;
+
+        if (defined(expected)) {
+            pass = (result.length === expected);
         } else {
             pass = !defined(result);
         }

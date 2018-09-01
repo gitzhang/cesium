@@ -1,5 +1,4 @@
 //#define SHOW_TILE_BOUNDARIES
-
 uniform vec4 u_initialColor;
 
 #if TEXTURE_UNITS > 0
@@ -53,8 +52,8 @@ uniform vec2 u_lightingFadeDistance;
 #endif
 
 #ifdef ENABLE_CLIPPING_PLANES
-uniform int u_clippingPlanesLength;
-uniform vec4 u_clippingPlanes[czm_maxClippingPlanes];
+uniform sampler2D u_clippingPlanes;
+uniform mat4 u_clippingPlanesMatrix;
 uniform vec4 u_clippingPlanesEdgeStyle;
 #endif
 
@@ -157,11 +156,7 @@ vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, mat
 void main()
 {
 #ifdef ENABLE_CLIPPING_PLANES
-    #ifdef COMBINE_CLIPPING_REGIONS
-    float clipDistance = czm_discardIfClippedCombineRegions(u_clippingPlanes, u_clippingPlanesLength);
-    #else
-    float clipDistance = czm_discardIfClipped(u_clippingPlanes, u_clippingPlanesLength);
-    #endif
+    float clipDistance = clip(gl_FragCoord, u_clippingPlanes, u_clippingPlanesMatrix);
 #endif
 
     // The clamp below works around an apparent bug in Chrome Canary v23.0.1241.0
@@ -187,6 +182,7 @@ void main()
     vec2 waterMaskTranslation = u_waterMaskTranslationAndScale.xy;
     vec2 waterMaskScale = u_waterMaskTranslationAndScale.zw;
     vec2 waterMaskTextureCoordinates = v_textureCoordinates.xy * waterMaskScale + waterMaskTranslation;
+    waterMaskTextureCoordinates.y = 1.0 - waterMaskTextureCoordinates.y;
 
     float mask = texture2D(u_waterMask, waterMaskTextureCoordinates).r;
 
@@ -218,9 +214,27 @@ void main()
     vec4 finalColor = vec4(color.rgb * diffuseIntensity, color.a);
 #elif defined(ENABLE_DAYNIGHT_SHADING)
     float diffuseIntensity = clamp(czm_getLambertDiffuse(czm_sunDirectionEC, normalEC) * 5.0 + 0.3, 0.0, 1.0);
-    float cameraDist = length(czm_view[3]);
+    float cameraDist;
+    if (czm_sceneMode == czm_sceneMode2D)
+    {
+        cameraDist = max(czm_frustumPlanes.x - czm_frustumPlanes.y, czm_frustumPlanes.w - czm_frustumPlanes.z) * 0.5;
+    }
+    else if (czm_sceneMode == czm_sceneModeColumbusView)
+    {
+        cameraDist = -czm_view[3].z;
+    }
+    else
+    {
+        cameraDist = length(czm_view[3]);
+    }
     float fadeOutDist = u_lightingFadeDistance.x;
     float fadeInDist = u_lightingFadeDistance.y;
+    if (czm_sceneMode != czm_sceneMode3D) {
+        vec3 radii = czm_getWgs84EllipsoidEC().radii;
+        float maxRadii = max(radii.x, max(radii.y, radii.z));
+        fadeOutDist -= maxRadii;
+        fadeInDist -= maxRadii;
+    }
     float t = clamp((cameraDist - fadeOutDist) / (fadeInDist - fadeOutDist), 0.0, 1.0);
     diffuseIntensity = mix(1.0, diffuseIntensity, t);
     vec4 finalColor = vec4(color.rgb * diffuseIntensity, color.a);
@@ -233,7 +247,8 @@ void main()
     clippingPlanesEdgeColor.rgb = u_clippingPlanesEdgeStyle.rgb;
     float clippingPlanesEdgeWidth = u_clippingPlanesEdgeStyle.a;
 
-    if (clipDistance < clippingPlanesEdgeWidth) {
+    if (clipDistance < clippingPlanesEdgeWidth)
+    {
         finalColor = clippingPlanesEdgeColor;
     }
 #endif
